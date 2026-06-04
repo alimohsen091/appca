@@ -1,0 +1,496 @@
+workflows:
+  android-debug-apk:
+    name: Build Cashier Printer Debug APK
+    max_build_duration: 60
+    environment:
+      java: 17
+    scripts:
+      - name: Create complete Android project files
+        script: |
+          pwd
+          ls -la
+          rm -rf app
+          mkdir -p app/src/main/java/com/cp9rap/cashierprinter app/src/main/res/values
+          cat > settings.gradle <<'SETTINGS'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement { repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS); repositories { google(); mavenCentral() } }
+          rootProject.name = 'CashierLocalPrinter'
+          include ':app'
+          SETTINGS
+          cat > build.gradle <<'ROOTGRADLE'
+          plugins {
+              id 'com.android.application' version '8.6.1' apply false
+          }
+          ROOTGRADLE
+          cat > app/build.gradle <<'APPGRADLE'
+          plugins { id 'com.android.application' }
+
+          android {
+              namespace 'com.cp9rap.cashierprinter'
+              compileSdk 35
+
+              defaultConfig {
+                  applicationId 'com.cp9rap.cashierprinter'
+                  minSdk 23
+                  targetSdk 35
+                  versionCode 1
+                  versionName '1.0.0'
+              }
+          }
+          APPGRADLE
+          cat > app/src/main/AndroidManifest.xml <<'MANIFEST'
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+              <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+
+              <application
+                  android:theme="@style/AppTheme"
+                  android:label="كاشير الطابعة"
+                  android:usesCleartextTraffic="true"
+                  android:allowBackup="false"
+                  android:supportsRtl="true">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:screenOrientation="portrait">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          MANIFEST
+          cat > app/src/main/res/values/styles.xml <<'STYLES'
+          <resources>
+              <style name="AppTheme" parent="android:style/Theme.Material.Light.NoActionBar">
+                  <item name="android:fontFamily">sans</item>
+                  <item name="android:windowActionModeOverlay">true</item>
+                  <item name="android:colorAccent">#C8860A</item>
+              </style>
+          </resources>
+          STYLES
+          cat > app/src/main/java/com/cp9rap/cashierprinter/MainActivity.java <<'JAVA'
+          package com.cp9rap.cashierprinter;
+
+          import android.app.Activity;
+          import android.os.Bundle;
+          import android.os.Handler;
+          import android.os.Looper;
+          import android.content.SharedPreferences;
+          import android.graphics.*;
+          import android.text.InputType;
+          import android.view.Gravity;
+          import android.view.View;
+          import android.widget.*;
+          import org.json.*;
+
+          import java.io.*;
+          import java.net.*;
+          import java.nio.charset.StandardCharsets;
+          import java.text.SimpleDateFormat;
+          import java.util.*;
+
+          public class MainActivity extends Activity {
+              private EditText siteUrlEt, tokenEt, printerIpEt, printerPortEt, intervalEt, paperWidthEt;
+              private Button saveBtn, startBtn, stopBtn, testBtn, pollBtn;
+              private TextView statusTv, logTv;
+              private final Handler handler = new Handler(Looper.getMainLooper());
+              private boolean running = false;
+              private SharedPreferences prefs;
+
+              private static final String DEFAULT_SITE = "https://cornflowerblue-falcon-944374.hostingersite.com";
+              private static final String DEFAULT_TOKEN = "lp_TFo2Vyy0V2B74xVje1284vPZPRGCz88Gr38M1QWs";
+              private static final String DEFAULT_PRINTER_IP = "192.168.3.144";
+              private static final String DEFAULT_PRINTER_PORT = "9100";
+              private static final String DEFAULT_INTERVAL = "10";
+              private static final String DEFAULT_PAPER_WIDTH = "576"; // 80mm غالباً. للطابعة 58mm استخدم 384.
+
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  prefs = getSharedPreferences("cashier_printer", MODE_PRIVATE);
+                  buildUi();
+                  loadSettings();
+              }
+
+              private void buildUi() {
+                  ScrollView scroll = new ScrollView(this);
+                  LinearLayout root = new LinearLayout(this);
+                  root.setOrientation(LinearLayout.VERTICAL);
+                  root.setPadding(dp(18), dp(18), dp(18), dp(18));
+                  root.setGravity(Gravity.RIGHT);
+                  scroll.addView(root);
+
+                  TextView title = new TextView(this);
+                  title.setText("تطبيق كاشير الطابعة");
+                  title.setTextSize(24);
+                  title.setTypeface(Typeface.DEFAULT_BOLD);
+                  title.setGravity(Gravity.RIGHT);
+                  root.addView(title, lp(-1, -2));
+
+                  statusTv = new TextView(this);
+                  statusTv.setText("متوقف");
+                  statusTv.setTextSize(16);
+                  statusTv.setGravity(Gravity.RIGHT);
+                  statusTv.setPadding(0, dp(8), 0, dp(14));
+                  root.addView(statusTv, lp(-1, -2));
+
+                  siteUrlEt = input("رابط الموقع", InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
+                  tokenEt = input("رمز التطبيق Token", InputType.TYPE_CLASS_TEXT);
+                  printerIpEt = input("IP الطابعة", InputType.TYPE_CLASS_TEXT);
+                  printerPortEt = input("Port الطابعة", InputType.TYPE_CLASS_NUMBER);
+                  intervalEt = input("الفحص كل كم ثانية", InputType.TYPE_CLASS_NUMBER);
+                  paperWidthEt = input("عرض الورقة بالبكسل 576 أو 384", InputType.TYPE_CLASS_NUMBER);
+                  root.addView(siteUrlEt); root.addView(tokenEt); root.addView(printerIpEt); root.addView(printerPortEt); root.addView(intervalEt); root.addView(paperWidthEt);
+
+                  saveBtn = btn("حفظ الإعدادات");
+                  startBtn = btn("تشغيل الطباعة التلقائية");
+                  stopBtn = btn("إيقاف");
+                  testBtn = btn("اختبار الطابعة");
+                  pollBtn = btn("فحص طلبات الآن");
+                  root.addView(saveBtn); root.addView(startBtn); root.addView(stopBtn); root.addView(testBtn); root.addView(pollBtn);
+
+                  logTv = new TextView(this);
+                  logTv.setTextSize(13);
+                  logTv.setGravity(Gravity.RIGHT);
+                  logTv.setPadding(dp(12), dp(12), dp(12), dp(12));
+                  logTv.setText("السجل سيظهر هنا...");
+                  root.addView(logTv, lp(-1, -2));
+
+                  setContentView(scroll);
+
+                  saveBtn.setOnClickListener(v -> saveSettings());
+                  startBtn.setOnClickListener(v -> startAuto());
+                  stopBtn.setOnClickListener(v -> stopAuto());
+                  testBtn.setOnClickListener(v -> new Thread(this::printTest).start());
+                  pollBtn.setOnClickListener(v -> new Thread(this::pollAndPrint).start());
+              }
+
+              private EditText input(String hint, int type) {
+                  EditText e = new EditText(this);
+                  e.setHint(hint);
+                  e.setInputType(type);
+                  e.setTextDirection(View.TEXT_DIRECTION_LTR);
+                  e.setGravity(Gravity.LEFT);
+                  e.setSingleLine(true);
+                  e.setPadding(dp(12), dp(10), dp(12), dp(10));
+                  e.setTextSize(15);
+                  return e;
+              }
+
+              private Button btn(String text) {
+                  Button b = new Button(this);
+                  b.setText(text);
+                  b.setAllCaps(false);
+                  return b;
+              }
+
+              private LinearLayout.LayoutParams lp(int w, int h) {
+                  LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(w, h);
+                  p.setMargins(0, dp(6), 0, dp(6));
+                  return p;
+              }
+
+              private int dp(int v) { return (int)(v * getResources().getDisplayMetrics().density + 0.5f); }
+
+              private void loadSettings() {
+                  siteUrlEt.setText(prefs.getString("site_url", DEFAULT_SITE));
+                  tokenEt.setText(prefs.getString("token", DEFAULT_TOKEN));
+                  printerIpEt.setText(prefs.getString("printer_ip", DEFAULT_PRINTER_IP));
+                  printerPortEt.setText(prefs.getString("printer_port", DEFAULT_PRINTER_PORT));
+                  intervalEt.setText(prefs.getString("interval", DEFAULT_INTERVAL));
+                  paperWidthEt.setText(prefs.getString("paper_width", DEFAULT_PAPER_WIDTH));
+              }
+
+              private void saveSettings() {
+                  prefs.edit()
+                          .putString("site_url", clean(siteUrlEt.getText().toString()))
+                          .putString("token", clean(tokenEt.getText().toString()))
+                          .putString("printer_ip", clean(printerIpEt.getText().toString()))
+                          .putString("printer_port", clean(printerPortEt.getText().toString()))
+                          .putString("interval", clean(intervalEt.getText().toString()))
+                          .putString("paper_width", clean(paperWidthEt.getText().toString()))
+                          .apply();
+                  log("تم حفظ الإعدادات");
+              }
+
+              private String clean(String s) { return s == null ? "" : s.trim(); }
+
+              private void startAuto() {
+                  saveSettings();
+                  running = true;
+                  status("يعمل الآن - الطباعة التلقائية مفعلة");
+                  log("بدأ تشغيل المراقبة...");
+                  scheduleNext(1000);
+              }
+
+              private void stopAuto() {
+                  running = false;
+                  handler.removeCallbacksAndMessages(null);
+                  status("متوقف");
+                  log("تم إيقاف المراقبة");
+              }
+
+              private void scheduleNext(long delay) {
+                  handler.postDelayed(() -> {
+                      if (!running) return;
+                      new Thread(() -> {
+                          pollAndPrint();
+                          int sec = parseInt(prefs.getString("interval", DEFAULT_INTERVAL), 10);
+                          scheduleNext(Math.max(3, sec) * 1000L);
+                      }).start();
+                  }, delay);
+              }
+
+              private void pollAndPrint() {
+                  try {
+                      String site = trimSlash(prefs.getString("site_url", DEFAULT_SITE));
+                      String token = prefs.getString("token", DEFAULT_TOKEN);
+                      String url = site + "/api/local_printer.php?action=pending&limit=10&token=" + URLEncoder.encode(token, "UTF-8");
+                      JSONObject json = new JSONObject(httpGet(url));
+                      if (!json.optBoolean("success")) {
+                          log("خطأ API: " + json.optString("error"));
+                          return;
+                      }
+                      JSONObject rest = json.optJSONObject("restaurant");
+                      JSONArray orders = json.optJSONArray("orders");
+                      if (orders == null || orders.length() == 0) {
+                          log("لا توجد طلبات جديدة");
+                          return;
+                      }
+                      log("طلبات جديدة: " + orders.length());
+                      for (int i = 0; i < orders.length(); i++) {
+                          JSONObject order = orders.getJSONObject(i);
+                          boolean printed = printOrderBitmap(order, rest);
+                          if (printed) markPrinted(order.optInt("id"));
+                      }
+                  } catch (Exception ex) {
+                      log("خطأ: " + ex.getMessage());
+                  }
+              }
+
+              private void markPrinted(int id) {
+                  try {
+                      String site = trimSlash(prefs.getString("site_url", DEFAULT_SITE));
+                      String token = prefs.getString("token", DEFAULT_TOKEN);
+                      String body = "token=" + URLEncoder.encode(token, "UTF-8") + "&order_id=" + id;
+                      String res = httpPost(site + "/api/local_printer.php?action=mark_printed", body);
+                      JSONObject json = new JSONObject(res);
+                      log(json.optBoolean("success") ? "تم تعليم الطلب مطبوع: " + id : "فشل تعليم الطلب مطبوع: " + json.optString("error"));
+                  } catch (Exception ex) {
+                      log("خطأ تعليم مطبوع: " + ex.getMessage());
+                  }
+              }
+
+              private boolean printOrderBitmap(JSONObject order, JSONObject rest) {
+                  try {
+                      int width = parseInt(prefs.getString("paper_width", DEFAULT_PAPER_WIDTH), 576);
+                      Bitmap bmp = buildReceiptBitmap(order, rest, width);
+                      byte[] data = buildRasterEscpos(bmp);
+                      sendToPrinter(data);
+                      log("تمت طباعة الطلب: " + order.optString("order_number"));
+                      return true;
+                  } catch (Exception ex) {
+                      log("فشل طباعة الطلب " + order.optString("order_number") + ": " + ex.getMessage());
+                      return false;
+                  }
+              }
+
+              private Bitmap buildReceiptBitmap(JSONObject order, JSONObject rest, int width) throws JSONException {
+                  Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+                  paint.setColor(Color.BLACK);
+                  paint.setTextAlign(Paint.Align.RIGHT);
+                  paint.setTypeface(Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL));
+                  int pad = 24;
+                  int y = 40;
+                  int lineGap = 12;
+                  int height = 1400;
+                  Bitmap bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+                  Canvas c = new Canvas(bmp);
+                  c.drawColor(Color.WHITE);
+
+                  String restName = rest != null ? rest.optString("name", "الكافيه") : "الكافيه";
+                  String restPhone = rest != null ? rest.optString("phone", "") : "";
+                  String restAddress = rest != null ? rest.optString("address", "") : "";
+
+                  y = drawCenter(c, paint, restName, width, y, 36, true);
+                  if (!restPhone.isEmpty()) y = drawCenter(c, paint, restPhone, width, y, 24, false);
+                  if (!restAddress.isEmpty()) y = drawCenter(c, paint, restAddress, width, y, 24, false);
+                  y += 8; y = divider(c, paint, width, y);
+
+                  y = drawRight(c, paint, "رقم الطلب: " + order.optString("order_number"), width - pad, y, 26, true);
+                  String table = order.optString("table_number", "");
+                  if (!table.isEmpty() && !table.equals("null")) y = drawRight(c, paint, "الطاولة: " + table, width - pad, y, 26, true);
+                  y = drawRight(c, paint, "الوقت: " + order.optString("created_at"), width - pad, y, 22, false);
+                  y += 8; y = divider(c, paint, width, y);
+
+                  y = drawRight(c, paint, "المنتجات", width - pad, y, 28, true);
+                  JSONArray items = order.optJSONArray("items_decoded");
+                  if (items != null) {
+                      for (int i = 0; i < items.length(); i++) {
+                          JSONObject it = items.getJSONObject(i);
+                          String name = it.optString("name_ar", it.optString("name_en", "منتج"));
+                          int qty = it.optInt("qty", 1);
+                          double price = it.optDouble("price", 0);
+                          double subtotal = it.has("subtotal") ? it.optDouble("subtotal", price * qty) : price * qty;
+                          y = drawRight(c, paint, name + " × " + qty, width - pad, y, 25, false);
+                          y = drawRight(c, paint, formatMoney(subtotal), width - pad, y, 24, true);
+                          y += lineGap;
+                      }
+                  }
+                  y = divider(c, paint, width, y);
+                  y = drawRight(c, paint, "الإجمالي: " + formatMoney(order.optDouble("total_amount", 0)), width - pad, y, 32, true);
+
+                  String notes = order.optString("notes", "");
+                  if (!notes.isEmpty() && !notes.equals("null")) {
+                      y += 8; y = divider(c, paint, width, y);
+                      y = drawRight(c, paint, "ملاحظات: " + notes, width - pad, y, 24, false);
+                  }
+                  y += 16; y = divider(c, paint, width, y);
+                  y = drawCenter(c, paint, "شكراً لزيارتكم", width, y, 26, true);
+                  y += 30;
+
+                  return Bitmap.createBitmap(bmp, 0, 0, width, Math.min(y, height));
+              }
+
+              private int drawRight(Canvas c, Paint paint, String text, int x, int y, int size, boolean bold) {
+                  paint.setTextSize(size);
+                  paint.setTypeface(Typeface.create(Typeface.SANS_SERIF, bold ? Typeface.BOLD : Typeface.NORMAL));
+                  paint.setTextAlign(Paint.Align.RIGHT);
+                  c.drawText(text == null ? "" : text, x, y, paint);
+                  return y + size + 12;
+              }
+
+              private int drawCenter(Canvas c, Paint paint, String text, int width, int y, int size, boolean bold) {
+                  paint.setTextSize(size);
+                  paint.setTypeface(Typeface.create(Typeface.SANS_SERIF, bold ? Typeface.BOLD : Typeface.NORMAL));
+                  paint.setTextAlign(Paint.Align.CENTER);
+                  c.drawText(text == null ? "" : text, width / 2f, y, paint);
+                  return y + size + 12;
+              }
+
+              private int divider(Canvas c, Paint paint, int width, int y) {
+                  paint.setStrokeWidth(2);
+                  c.drawLine(20, y, width - 20, y, paint);
+                  return y + 20;
+              }
+
+              private String formatMoney(double v) {
+                  return String.format(Locale.US, "%,.0f", v) + " د.ع";
+              }
+
+              private byte[] buildRasterEscpos(Bitmap bmp) throws IOException {
+                  ByteArrayOutputStream out = new ByteArrayOutputStream();
+                  out.write(new byte[]{0x1B, 0x40}); // init
+                  out.write(new byte[]{0x1B, 0x61, 0x01}); // center
+                  int width = bmp.getWidth();
+                  int height = bmp.getHeight();
+                  int bytesPerRow = (width + 7) / 8;
+                  out.write(new byte[]{0x1D, 0x76, 0x30, 0x00, (byte)(bytesPerRow & 0xff), (byte)((bytesPerRow >> 8) & 0xff), (byte)(height & 0xff), (byte)((height >> 8) & 0xff)});
+                  for (int y = 0; y < height; y++) {
+                      for (int xByte = 0; xByte < bytesPerRow; xByte++) {
+                          int b = 0;
+                          for (int bit = 0; bit < 8; bit++) {
+                              int x = xByte * 8 + bit;
+                              if (x < width) {
+                                  int color = bmp.getPixel(x, y);
+                                  int r = Color.red(color), g = Color.green(color), bl = Color.blue(color);
+                                  int gray = (r + g + bl) / 3;
+                                  if (gray < 160) b |= (0x80 >> bit);
+                              }
+                          }
+                          out.write(b);
+                      }
+                  }
+                  out.write(new byte[]{0x0A,0x0A,0x0A, 0x1D,0x56,0x41,0x00}); // feed + cut
+                  return out.toByteArray();
+              }
+
+              private void sendToPrinter(byte[] data) throws IOException {
+                  String ip = prefs.getString("printer_ip", DEFAULT_PRINTER_IP);
+                  int port = parseInt(prefs.getString("printer_port", DEFAULT_PRINTER_PORT), 9100);
+                  Socket socket = new Socket();
+                  socket.connect(new InetSocketAddress(ip, port), 5000);
+                  OutputStream os = socket.getOutputStream();
+                  os.write(data);
+                  os.flush();
+                  socket.close();
+              }
+
+              private void printTest() {
+                  try {
+                      JSONObject order = new JSONObject();
+                      order.put("id", 0);
+                      order.put("order_number", "TEST-PRINT");
+                      order.put("table_number", "اختبار");
+                      order.put("created_at", new SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(new Date()));
+                      order.put("total_amount", 2000);
+                      JSONArray items = new JSONArray();
+                      JSONObject item = new JSONObject();
+                      item.put("name_ar", "اختبار الطابعة"); item.put("qty", 1); item.put("price", 2000); item.put("subtotal", 2000);
+                      items.put(item); order.put("items_decoded", items); order.put("notes", "تجربة من تطبيق الكاشير");
+                      JSONObject rest = new JSONObject(); rest.put("name", "اختبار الكاشير"); rest.put("phone", ""); rest.put("address", "");
+                      printOrderBitmap(order, rest);
+                  } catch (Exception ex) { log("فشل اختبار الطابعة: " + ex.getMessage()); }
+              }
+
+              private String httpGet(String urlStr) throws IOException {
+                  HttpURLConnection con = (HttpURLConnection) new URL(urlStr).openConnection();
+                  con.setConnectTimeout(10000); con.setReadTimeout(10000); con.setRequestMethod("GET");
+                  return readResponse(con);
+              }
+
+              private String httpPost(String urlStr, String body) throws IOException {
+                  byte[] data = body.getBytes(StandardCharsets.UTF_8);
+                  HttpURLConnection con = (HttpURLConnection) new URL(urlStr).openConnection();
+                  con.setConnectTimeout(10000); con.setReadTimeout(10000); con.setRequestMethod("POST");
+                  con.setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8");
+                  con.setDoOutput(true);
+                  OutputStream os = con.getOutputStream(); os.write(data); os.flush(); os.close();
+                  return readResponse(con);
+              }
+
+              private String readResponse(HttpURLConnection con) throws IOException {
+                  InputStream is = con.getResponseCode() >= 400 ? con.getErrorStream() : con.getInputStream();
+                  BufferedReader br = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8));
+                  StringBuilder sb = new StringBuilder(); String line;
+                  while ((line = br.readLine()) != null) sb.append(line);
+                  br.close(); con.disconnect(); return sb.toString();
+              }
+
+              private String trimSlash(String s) { return s == null ? "" : s.trim().replaceAll("/+$", ""); }
+              private int parseInt(String s, int def) { try { return Integer.parseInt(s.trim()); } catch(Exception e) { return def; } }
+
+              private void log(String msg) {
+                  runOnUiThread(() -> {
+                      String now = new SimpleDateFormat("HH:mm:ss", Locale.US).format(new Date());
+                      logTv.setText(now + " - " + msg + "\n" + logTv.getText().toString());
+                  });
+              }
+              private void status(String msg) { runOnUiThread(() -> statusTv.setText(msg)); }
+          }
+          JAVA
+          find . -maxdepth 5 -type f | sort
+          test -d app
+          test -f app/build.gradle
+          test -f app/src/main/AndroidManifest.xml
+          test -f app/src/main/java/com/cp9rap/cashierprinter/MainActivity.java
+      - name: Create Gradle wrapper if missing
+        script: |
+          if [ ! -f "./gradlew" ]; then
+            gradle wrapper --gradle-version 8.7
+          fi
+          chmod +x ./gradlew
+      - name: Build debug APK
+        script: |
+          ./gradlew assembleDebug
+    artifacts:
+      - app/build/outputs/**/*.apk
